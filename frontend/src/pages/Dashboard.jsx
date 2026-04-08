@@ -134,7 +134,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('/api/stats?agent=default')
+    fetch('/api/stats')
       .then((r) => r.json())
       .then((data) => {
         if (data && !data.error) setApiStats(data);

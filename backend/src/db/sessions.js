@@ -59,6 +59,7 @@ async function getSessionsByScenario(scenarioId, limit = 50) {
 }
 
 async function getAgentStats(agentName) {
+  const hasFilter = agentName !== undefined;
   const result = await pool.query(
     `SELECT
        COUNT(*) as total_sessions,
@@ -70,20 +71,21 @@ async function getAgentStats(agentName) {
        ROUND(AVG((scores->>'toneConsistency')::numeric)) as avg_tone,
        ROUND(AVG((scores->>'talkListenRatio')::numeric)) as avg_talk_listen
      FROM training_sessions
-     WHERE agent_name = $1`,
-    [agentName]
+     ${hasFilter ? 'WHERE agent_name = $1' : ''}`,
+    hasFilter ? [agentName] : []
   );
   return result.rows[0];
 }
 
 async function getScoreHistory(agentName, limit = 20) {
+  const hasFilter = agentName !== undefined;
   const result = await pool.query(
     `SELECT id, overall_score, scores, created_at, scenario_id
      FROM training_sessions
-     WHERE agent_name = $1
+     ${hasFilter ? 'WHERE agent_name = $1' : ''}
      ORDER BY created_at ASC
-     LIMIT $2`,
-    [agentName, limit]
+     LIMIT ${hasFilter ? '$2' : '$1'}`,
+    hasFilter ? [agentName, limit] : [limit]
   );
   return result.rows;
 }

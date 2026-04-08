@@ -112,9 +112,9 @@ app.get('/api/sessions/:id/audio', async (req, res) => {
 
 app.get('/api/stats', async (req, res) => {
   try {
-    const { agent = 'default' } = req.query;
-    const stats = await getAgentStats(agent);
-    const history = await getScoreHistory(agent);
+    const { agent } = req.query;
+    const stats = agent ? await getAgentStats(agent) : await getAgentStats();
+    const history = agent ? await getScoreHistory(agent) : await getScoreHistory();
     res.json({ stats, history });
   } catch (err) {
     logger.error('Failed to get stats', err);
