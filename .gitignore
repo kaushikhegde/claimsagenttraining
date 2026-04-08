@@ -2,3 +2,6 @@ node_modules
 .superpowers
 docs
 audio
+.idea
+backend/.env
+frontend/.env
