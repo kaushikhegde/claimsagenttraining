@@ -1,8 +1,27 @@
 const WebSocket = require('ws');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 const config = require('../config');
 const { getScriptedPrompt, getFreestylePrompt } = require('./prompts');
 const { SessionTimer } = require('./timer');
 const logger = require('../utils/logger');
+
+const genAI = new GoogleGenerativeAI(config.geminiApiKey);
+
+// Regex to detect non-Latin script characters (Devanagari, Tamil, etc.)
+const NON_LATIN_RE = /[^\u0000-\u024F\u1E00-\u1EFF\u2000-\u206F\u2070-\u209F\u20A0-\u20CF\u2100-\u214F\s\d\p{P}]/u;
+
+async function translateToEnglish(text) {
+  try {
+    const model = genAI.getGenerativeModel({ model: config.geminiTextModel });
+    const result = await model.generateContent(
+      `Translate the following text to English. Return ONLY the English translation, nothing else. Do not add quotes or explanations.\n\n${text}`,
+    );
+    return result.response.text().trim();
+  } catch (err) {
+    logger.warn('Translation failed, using original text:', err.message);
+    return text;
+  }
+}
 
 const GEMINI_LIVE_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 const CONNECTION_TIMEOUT_MS = 10000;
@@ -256,8 +275,21 @@ class TrainingSession {
     if (this._currentBuffer && this._currentBuffer.trim()) {
       const text = this._currentBuffer.trim();
       const role = this._currentRole;
-      this.transcript.push({ role, message: text, elapsed: this.getDurationSeconds() });
-      this._sendToBrowser({ type: 'transcript_done', role });
+      const elapsed = this.getDurationSeconds();
+
+      if (role === 'agent' && NON_LATIN_RE.test(text)) {
+        // Non-Latin script detected — translate to English before saving
+        logger.info(`Non-Latin agent transcript detected, translating: "${text.substring(0, 50)}..."`);
+        translateToEnglish(text).then((translated) => {
+          this.transcript.push({ role, message: translated, elapsed });
+          // Send corrected transcript to replace the streamed non-Latin chunks
+          this._sendToBrowser({ type: 'transcript_replace', role, text: translated });
+          this._sendToBrowser({ type: 'transcript_done', role });
+        });
+      } else {
+        this.transcript.push({ role, message: text, elapsed });
+        this._sendToBrowser({ type: 'transcript_done', role });
+      }
     }
     this._currentBuffer = '';
     this._currentRole = null;

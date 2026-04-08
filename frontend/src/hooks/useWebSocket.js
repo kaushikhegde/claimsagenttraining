@@ -70,6 +70,18 @@ export function useWebSocket({ onAudio, onGreetingDone, onTurnComplete } = {}) {
             });
             break;
 
+          case 'transcript_replace':
+            // Replace last agent message with translated English text
+            setTranscript((prev) => {
+              const lastIdx = [...prev].reverse().findIndex((m) => m.role === msg.role);
+              if (lastIdx === -1) return prev;
+              const idx = prev.length - 1 - lastIdx;
+              const updated = [...prev];
+              updated[idx] = { ...updated[idx], text: msg.text };
+              return updated;
+            });
+            break;
+
           case 'transcript_done':
             setTranscript((prev) => {
               const last = prev[prev.length - 1];
