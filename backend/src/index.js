@@ -7,6 +7,7 @@ const config = require('./config');
 const { handleConnection } = require('./ws/handler');
 const pool = require('./db/pool');
 const logger = require('./utils/logger');
+const blobStorage = require('./storage/blob');
 const { getAllSessions, getSessionById, getSessionsByScenario, getAgentStats, getScoreHistory } = require('./db/sessions');
 const { getAllScenarios: getScenarioDefinitions } = require('./training/scenarios');
 
@@ -75,13 +76,44 @@ app.get('/api/sessions/:id/audio', async (req, res) => {
     if (!session || !session.audio_file_path) {
       return res.status(404).json({ error: 'Audio not found' });
     }
-    const audioPath = path.join(__dirname, '..', session.audio_file_path);
+    const stored = session.audio_file_path;
+    const range = req.headers.range;
+
+    // Audio kept in Azure Blob (claims-agent/...) — proxy the bytes through here.
+    if (stored.startsWith(`${blobStorage.PREFIX}/`)) {
+      const { contentLength } = await blobStorage.getAudioProperties(stored);
+      if (range) {
+        const parts = range.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : contentLength - 1;
+        const chunkSize = end - start + 1;
+        const stream = await blobStorage.downloadAudio(stored, start, chunkSize);
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${contentLength}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': chunkSize,
+          'Content-Type': 'audio/wav',
+        });
+        stream.pipe(res);
+      } else {
+        const stream = await blobStorage.downloadAudio(stored);
+        res.writeHead(200, {
+          'Content-Length': contentLength,
+          'Content-Type': 'audio/wav',
+          'Accept-Ranges': 'bytes',
+        });
+        stream.pipe(res);
+      }
+      return;
+    }
+
+    // Local file (dev fallback)
+    const audioPath = path.join(__dirname, '..', stored);
     if (!fs.existsSync(audioPath)) {
       return res.status(404).json({ error: 'Audio file missing' });
     }
     const stat = fs.statSync(audioPath);
     const fileSize = stat.size;
-    const range = req.headers.range;
 
     if (range) {
       const parts = range.replace(/bytes=/, '').split('-');

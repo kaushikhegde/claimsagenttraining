@@ -5,6 +5,7 @@ const { insertSession } = require('../db/sessions');
 const { insertTranscript } = require('../db/transcripts');
 const { insertBatchLogs } = require('../db/logs');
 const logger = require('../utils/logger');
+const blobStorage = require('../storage/blob');
 const fs = require('fs');
 const path = require('path');
 
@@ -37,11 +38,12 @@ function resample16to24(input16) {
 }
 
 /**
- * Build a sequential WAV from the audio timeline.
+ * Build a sequential WAV buffer from the audio timeline.
  * Each chunk is laid out in conversation order (not overlapping).
  * Agent audio (16kHz) is resampled to 24kHz and gain-boosted to match customer level.
+ * Returns a WAV Buffer, or null when there is no audio.
  */
-function saveAudioAsWav(timeline, sessionId) {
+function buildWavBuffer(timeline) {
   if (!timeline || timeline.length === 0) return null;
 
   // Group consecutive chunks by role into segments
@@ -140,11 +142,29 @@ function saveAudioAsWav(timeline, sessionId) {
   header.write('data', 36);
   header.writeUInt32LE(dataSize, 40);
 
-  const wavBuffer = Buffer.concat([header, pcmData]);
-  const filePath = path.join(AUDIO_DIR, `${sessionId}.wav`);
-  fs.writeFileSync(filePath, wavBuffer, { mode: 0o600 });
+  return Buffer.concat([header, pcmData]);
+}
 
-  return `audio/${sessionId}.wav`;
+/**
+ * Persist the WAV: upload to Azure Blob under claims-agent/ when configured,
+ * otherwise write to local disk (dev fallback). Returns the stored reference to
+ * save in the DB ("claims-agent/<name>.wav" or "audio/<name>.wav"), or null.
+ */
+async function saveAudio(timeline, name) {
+  const wavBuffer = buildWavBuffer(timeline);
+  if (!wavBuffer) return null;
+
+  const fileName = `${name}.wav`;
+  if (blobStorage.isConfigured()) {
+    const blobName = await blobStorage.uploadAudio(fileName, wavBuffer);
+    logger.info(`Audio uploaded to blob: ${blobName}`);
+    return blobName;
+  }
+
+  const filePath = path.join(AUDIO_DIR, fileName);
+  fs.writeFileSync(filePath, wavBuffer, { mode: 0o600 });
+  logger.info(`Audio saved locally: audio/${fileName}`);
+  return `audio/${fileName}`;
 }
 
 async function handleConnection(ws) {
@@ -309,22 +329,22 @@ async function endSession(session, ws, meta) {
 
     const evaluation = await evaluateSession(transcript, scenarioContext);
 
+    // Persist audio (Azure Blob, or local disk in dev) before opening the DB
+    // transaction so a slow upload doesn't hold a pooled connection open.
+    let audioFilePath = null;
+    try {
+      logger.info(`Audio timeline: ${audioTimeline.length} chunks`);
+      audioFilePath = await saveAudio(audioTimeline, `${Date.now()}-${meta.scenarioId}`);
+    } catch (audioErr) {
+      logger.warn('Failed to save audio:', audioErr.message);
+    }
+
     // Save to DB using transaction for multi-table insert
     const pool = require('../db/pool');
     const client = await pool.connect();
     let sessionId;
     try {
       await client.query('BEGIN');
-
-      // Save audio as WAV file
-      let audioFilePath = null;
-      try {
-        logger.info(`Audio timeline: ${audioTimeline.length} chunks`);
-        audioFilePath = saveAudioAsWav(audioTimeline, `${Date.now()}-${meta.scenarioId}`);
-        if (audioFilePath) logger.info(`Audio saved: ${audioFilePath}`);
-      } catch (audioErr) {
-        logger.warn('Failed to save audio:', audioErr.message);
-      }
 
       const sessionData = {
         scenarioId: meta.scenarioId,
